@@ -1,0 +1,341 @@
+\documentclass[12pt,letterpaper,oneside]{article}
+
+\input{./latexGoodPractices/preamble}
+
+%==============================================================
+% FILL THIS SECTION
+
+\newcommand{\reportTitle}{Food Type Recognition and Calorie Estimation System}
+\newcommand{\reportAuthors}{Mingzheng Liu, Zhiyi Wang, Lanbo Feng, Lei Su, Haoxin Zeng}
+\newcommand{\reportDate}{\today} % or manually: December 2025
+
+\newcommand{\reportVersions}{
+1.0 & \today & Final writing %\\
+%0.1 & November 23, 2017 & Initial writing
+}
+% Change to your specific bibliography file
+\addbibresource{./latexGoodPractices/exampleReferences.bib}
+%\addbibresource{./references.bib}
+%==============================================================
+
+
+% ---------------------------------------------------------------
+% Load style
+\input{technicalReportStyle.tex}
+% ---------------------------------------------------------------
+
+% Add your other packages here
+% make sure to check prembule.tex first!
+
+
+%================================================================
+\begin{document}
+\makeCustomTitle
+\thispagestyle{titlePage}
+
+% ---------------------------------------------------------------
+\begin{abstract}
+This technical report presents an end-to-end Food Type Recognition and Calorie Estimation System implemented as a mobile application. The system combines image segmentation, image classification, distance estimation, and volume computation to automatically infer the caloric content of food from a single photograph. The proposed architecture integrates lightweight deep-learning models with geometric reasoning to support real-time inference on consumer devices. Experimental results on benchmark datasets demonstrate that the system achieves competitive accuracy while maintaining practical efficiency for everyday dietary monitoring.
+\end{abstract}
+
+% ---------------------------------------------------------------
+\section{Project Overview}
+
+\subsection{Background}
+
+In today's society, people are increasingly concerned about their physical health. Among the various factors influencing health, dietary habits have received particular attention. Individuals often wonder about the caloric content of the food in front of them, yet due to the complexity and diversity of food types, it is difficult to accurately determine this information in daily life.
+
+To address this issue, our team developed the \emph{Food Type Recognition and Calorie Estimation System}. This system is implemented as an Android application, capable of analyzing food types in real time through the smartphone camera and estimating their caloric content. The system integrates multiple algorithmic models, including image segmentation, image classification, and distance- and volume-estimation modules. Through this combination, the application targets practical, in-the-wild usage scenarios where users simply take a photo and receive an approximate calorie estimate without needing expert nutritional knowledge.
+
+\subsection{Work Division}
+
+The group work division is organized according to the core technical modules of the system:
+
+\begin{itemize}
+    \item \textbf{LIU Mingzheng}: Image segmentation based on the YOLOv8n architecture, including dataset preparation, training pipeline design, and experimental evaluation.
+    \item \textbf{Wang Zhiyi}: Food volume estimation, focusing on geometric modeling, pixel-to-physical unit conversion, and algorithm implementation for different food shapes.
+    \item \textbf{Feng Lanbo}: Food volume estimation, including contour extraction, calibration strategy, and evaluation of volume estimation accuracy.
+    \item \textbf{Su Lei (Group Leader)}: Image classification, including EfficientNet-B3 fine-tuning on Food-101, optimization strategy, and model performance analysis.
+    \item \textbf{ZENG Haoxin}: System integration and app optimization, responsible for connecting all backend services to the mobile frontend and improving user experience.
+\end{itemize}
+
+This division ensures that each team member has clear responsibilities while enabling effective collaboration across modules, from core algorithms to system-level integration.
+
+% ---------------------------------------------------------------
+\section{Image Classification}
+
+\subsection{Model Architecture}
+
+The food image classification module in our system is implemented by fine-tuning an EfficientNet-B3 convolutional neural network on the Food-101 dataset. The implementation is based on the \texttt{torchvision.models.efficientnet\_b3} backbone with ImageNet-1K pre-trained weights (\texttt{EfficientNet\_B3\_Weights.IMAGENET1K\_V1}). The model is adapted to the food-recognition task by replacing only the final classification layer while keeping the rest of the feature-extraction backbone frozen or trainable as a whole according to the optimization setting.
+
+Each input is an RGB food image sampled from the Food-101 dataset. During training, images are first randomly resized and cropped to a spatial resolution of $300 \times 300$, followed by random horizontal flipping, color jitter (brightness, contrast, saturation, hue), and small random rotations. The pixel values are then converted to tensors and normalized using the mean and standard deviation associated with the ImageNet pre-trained EfficientNet-B3 weights. For validation, a deterministic pipeline is used: resizing to 320 pixels on the shorter side, center cropping to $300 \times 300$, tensor conversion, and the same normalization. This ensures that the model always receives 3-channel $300 \times 300$ inputs whose statistics match those of the pre-training domain.
+
+The core of the network is the EfficientNet-B3 feature extractor. EfficientNet-B3 is a member of the EfficientNet family that uses compound scaling to jointly scale depth, width, and input resolution, and employs mobile inverted bottleneck convolution (MBConv) blocks with depthwise separable convolutions and squeeze-and-excitation channel attention. Starting from the normalized $3 \times 300 \times 300$ image, a stack of MBConv stages progressively reduces the spatial resolution while increasing the channel dimension, producing a high-level feature map that captures both local texture cues and global shape or structure cues. A global average pooling operation aggregates these feature maps into a single high-dimensional feature vector for each image.
+
+In the original ImageNet-trained EfficientNet-B3, the classification head consists of a dropout layer followed by a fully connected (linear) layer mapping from the pooled feature dimension to 1000 ImageNet classes. In our implementation, we preserve the dropout layer to regularize the model and mitigate overfitting, but replace the final linear layer with a new fully connected layer whose output dimension matches the Food-101 label space (101 categories). The resulting 101-dimensional logits are fed into a cross-entropy loss with label smoothing (smoothing factor 0.1), which further improves generalization by preventing the network from becoming overly confident in any single class prediction.
+
+\subsection{Optimization Strategy}
+
+The optimization strategy for training the food classification model is designed to ensure stable convergence, robust generalization, and effective adaptation of the EfficientNet-B3 backbone to the Food-101 dataset. The strategy integrates several key components: a stochastic optimization algorithm, a learning-rate configuration, regularization mechanisms, label smoothing, and performance-based checkpointing.
+
+The model is optimized using the Adam optimizer, which combines adaptive learning-rate scaling with momentum-based updates. Adam is particularly well suited for fine-tuning large pre-trained models such as EfficientNet because it stabilizes the optimization dynamics across layers with heterogeneous gradient statistics. A weight-decay term (L2 regularization) is included to mitigate overfitting, which is crucial when fine-tuning on high-variance datasets such as Food-101. This encourages the model to maintain smaller, more stable weights and reduces the risk of memorizing spurious correlations.
+
+Training uses a constant learning rate specified in the optimizer configuration. For fine-tuning a pre-trained EfficientNet backbone, this stable learning-rate schedule avoids oscillations and catastrophic forgetting---ensuring that lower layers retain essential ImageNet-derived representations while allowing the upper layers and the new classification head to adapt to food-specific semantics. Additionally, the presence of data augmentation effectively acts as a ``soft regularizer,'' reducing the model's sensitivity to the fixed learning rate.
+
+The classification objective is optimized using cross-entropy loss, enhanced with label smoothing (smoothing factor $=0.1$). This modification replaces the one-hot target distribution with a softened label distribution. Label smoothing improves model robustness by preventing over-confidence and encouraging smoother, more stable decision boundaries. By distributing a small amount of probability across non-target classes, it reduces the model's sensitivity to noisy or imperfect labels in the Food-101 dataset and mitigates the impact of ambiguous samples. This regularization effect enhances generalization to unseen food types and is particularly valuable in fine-grained classification scenarios, where inter-class visual similarity is high.
+
+The model is trained using mini-batch stochastic training, which processes a subset of samples in each iteration rather than the entire dataset. This mini-batch strategy leads to smoother and more stable optimization dynamics compared with pure stochastic updates while maintaining a beneficial level of gradient noise that supports generalization. It also enables more efficient utilization of GPU computational resources by balancing memory load and throughput. When combined with the Adam optimizer, mini-batch training results in fast and reliable convergence, allowing the model to adapt effectively to the Food-101 dataset while preserving stability throughout the optimization process.
+
+The training pipeline incorporates extensive data augmentation, including random resized cropping, horizontal flipping, color jittering across brightness, contrast, saturation, and hue, as well as random rotations. These transformations substantially enrich the diversity of the training data by simulating variations in viewpoint, lighting, color distribution, and presentation style. As a result, the model learns representations that are robust to the wide range of visual conditions present in real-world food imagery. This augmentation strategy acts as a strong form of implicit regularization, reducing overfitting and improving generalization, which is essential for achieving reliable performance in mobile deployment scenarios where input variability is high.
+
+The training process evaluates the model on the validation set at the end of each epoch, computing both validation loss and accuracy. Whenever an improvement in validation accuracy is observed, the model automatically saves the current set of parameters. This performance-based checkpointing ensures that the best-performing model is always retained, even if subsequent training epochs introduce instability or overfitting. In practice, this mechanism functions similarly to a manual form of early stopping, preventing degradation in model quality and safeguarding the optimal solution during the later stages of training.
+
+\subsection{Dataset}
+
+The Food-101 dataset is a large-scale benchmark for food image classification, consisting of 101 food categories with a total of 101{,}000 images (1000 per class). It is divided into 75{,}750 training images and 25{,}250 test images, where the training set intentionally includes noisy, real-world variations such as inconsistent lighting, occlusion, and background clutter, while the test set contains manually cleaned annotations. The dataset is characterized by high intra-class variability and substantial inter-class similarity, making it a challenging fine-grained recognition task. These properties, together with its balanced class distribution and diverse visual conditions, make Food-101 an ideal benchmark for developing and evaluating deep-learning models for food recognition applications.
+
+\subsection{Model Performance}
+
+The final EfficientNet-B3 model achieved strong performance on the Food-101 validation set. The best checkpoint was obtained at epoch 23, where the model reached a validation accuracy of 88.91\%, reflecting effective generalization across the 101 fine-grained food categories. During the same epoch, the training accuracy exceeded 99\%, indicating successful convergence while still maintaining a reasonable gap between training and validation performance, a pattern consistent with the inherent visual complexity and high intra-class variability of Food-101. The validation loss of approximately 1.16 further aligns with the challenging nature of the dataset, which contains substantial noise and diverse real-world imaging conditions.
+
+Overall, these results demonstrate that the fine-tuned EfficientNet-B3 model is capable of learning discriminative representations for food recognition and delivers competitive performance suitable for downstream calorie-estimation applications in mobile environments.
+
+% ---------------------------------------------------------------
+\section{Image Segmentation}
+
+\subsection{Model Architecture}
+
+We implement a food image segmentation task based on YOLOv8n. The main considerations for choosing this network are its small number of parameters (approximately 3.2 million), which is suitable for mobile deployment; fast inference speed, meeting real-time requirements; excellent segmentation performance; and low GPU memory requirements.
+
+The YOLOv8n architecture mainly consists of three components. The backbone network is used to extract multi-scale features. The neck network is used to fuse the multi-scale features extracted by the backbone. The head network separates the classification, regression, and segmentation tasks, decoupling the three tasks and improving task accuracy. From a workflow perspective, the network sequentially extracts the region of interest from the feature map by adding a mask-prediction branch during the detection process, generates a mask prototype, and obtains the final segmentation result through coefficient-matrix combination, ultimately completing the image segmentation task.
+
+The backbone is the core feature extractor of the model, designed to efficiently extract rich multi-scale information from the original input image (of resolution $640 \times 640$ pixels) while maintaining extremely low computational overhead. The backbone abandons the Focus slicing operation used in previous YOLOv5 models, instead using a standard $3 \times 3$ convolutional layer with a stride of 2 as the initial layer. This change simplifies the architecture, eliminates hardware compatibility issues that slicing operations might introduce, and maintains downsampling performance. The core of the network consists of a series of carefully designed C2f modules, a key innovation of YOLOv8. The C2f module is an enhancement of the C3 module, branching the gradient flow at a deeper level. Specifically, a C2f module contains a main branch and multiple parallel lightweight Bottleneck sub-branches. The features processed by these sub-branches are concatenated with the initial features of the main branch, achieving multi-level feature fusion across stages. This structure not only enhances the model's feature-representation capabilities, but its built-in depthwise separable convolutions also ensure a lightweight design, reducing computational overhead and enabling deployment on mobile devices.
+
+At the end of the backbone, the SPPF module replaces the traditional SPP module for efficiently aggregating multi-scale contextual information. SPPF achieves a similar effect to SPP (which runs in parallel using pooling kernels of different sizes) by connecting three $5 \times 5$ max-pooling layers. This connection strategy avoids redundant computation, significantly improving computational efficiency while maintaining the same or even slightly better feature-fusion performance. Finally, the backbone outputs feature maps at three key scales: $80 \times 80$ (shallow), $40 \times 40$ (mid-level), and $20 \times 20$ (deep). These three feature maps contain rich details, balanced semantic information, and high-level semantics, respectively, laying a solid foundation for subsequent multi-scale feature fusion and prediction in the neck network.
+
+The neck network, located between the backbone network and the detection head, has the core task of effectively fusing and enhancing features extracted from different scales by the backbone. YOLOv8n employs the PAN-FPN architecture, a powerful feature-pyramid network. The core idea of PAN-FPN is bidirectional feature fusion, which includes two paths: the first is a top-down path, upsampling deep, semantically rich features (small feature maps) and fusing them with mid-level features. This process is analogous to injecting semantic understanding into shallow features rich in detail, enabling them not only to see the edges of objects but also to understand the type of objects. The second path is a bottom-up path, downsampling the semantically enhanced shallow features and then fusing them with deeper features. This is equivalent to supplementing high-level semantic features with precise location details, thereby improving the accuracy of object boundary localization.
+
+Through this bidirectional iterative fusion, PAN-FPN prepares three sets of feature maps for the detection head: high-resolution feature maps ($80 \times 80$), rich in detail and semantically enhanced, adept at detecting small targets; medium-resolution feature maps ($40 \times 40$), achieving the best balance between detail and semantics, serving as the main tool for detecting medium-sized targets; and low-resolution feature maps ($20 \times 20$), which possess the strongest semantic information and fine-grained localization capabilities, responsible for detecting large targets.
+
+The detection head is the decision-output layer of the entire YOLOv8n architecture, responsible for converting the multi-scale features processed by the neck network into the final prediction result. YOLOv8n employs an advanced task-separated detection-head design, completely changing the traditional YOLO approach of coupling the detection head. Traditional YOLO uses shared convolutional layers to simultaneously predict classification probabilities (what the target is) and regression coordinates (where the target is), which easily leads to interference between the two tasks. YOLOv8n's decoupled head completely separates these two tasks: it contains three independent branches---one branch focuses on predicting the precise center point and size of the bounding box (regression task); another branch specifically calculates the probability that each candidate box belongs to each class (classification task); and the third branch evaluates the confidence that the target exists at that location (objectness). This design allows each branch to be optimized for its own task, significantly improving the model's accuracy and convergence speed.
+
+Another major innovation is the anchor-free prediction mechanism. Traditional object detection requires pre-defining a series of anchor boxes of different sizes and scales as references; the network then predicts offsets relative to these anchors. YOLOv8n abandons this complex step, instead directly predicting the offset from the target's center point to the top-left corner of the grid, as well as the target's width and height. This not only significantly simplifies the training process (eliminating the need for cluster analysis to generate anchor boxes) but also enhances the model's generalization ability to targets of different scales and reduces bias caused by improper anchor-box design.
+
+For the segmentation task, the detection head adds a lightweight masking branch to the decoupled head. This masking branch does not directly classify each pixel but uses an efficient prototype-masking method: it first generates a small number (e.g., 32) of basic mask prototypes, and then predicts a set of coefficients for each detected instance. By linearly combining these coefficients with the basic prototypes, an accurate pixel-level mask can be dynamically generated for each instance. This design avoids huge computational overhead and achieves a clever unification of detection and segmentation.
+
+\subsection{Dataset}
+
+We used UECFoodPix as the food image segmentation dataset for this training task. Collected and created by a research team at the University of Tokyo, it contains approximately 10{,}000 photos of various foods. These photos are not elaborately plated dishes, but rather realistically depict how food looks in various everyday scenarios---whether on a plate, in a takeout box, or on a dining table.
+
+The most unique aspect of this dataset is its highly detailed annotation. Each photo is not only marked with a box indicating that some food is present, but also precisely outlined in different colors, much like a child coloring. For example, in a bowl of ramen, the broth, noodles, char siu pork, and scallions are clearly visible. This fine-grained annotation method, known as pixel-level segmentation annotation, is a key foundation for training AI models to achieve accurate recognition. Because UECFoodPix provides high-quality annotations, our AI model can learn not only to recognize food in complex tabletop images but also to accurately delineate the specific outlines and boundaries of each food item.
+
+We chose this dataset as our training dataset for several reasons. First, the task definition of this dataset aligns perfectly with our objectives. UECFoodPix is specifically designed for instance-segmentation tasks, providing pixel-level fine-grained annotations---the supervision signal necessary for training models to learn and predict food contour masks. This is fundamentally different from detection datasets that only provide bounding boxes and directly meets the basic requirements of segmentation tasks for annotation format.
+
+Second, the quality and scale of this dataset meet the needs of model training. The dataset contains approximately 10{,}000 images, covering over 100 food categories and encompassing various real-world dining scenarios. Sufficient sample size is a prerequisite for the model to fully learn features, while the diversity of categories and scenarios is crucial for improving the model's generalization ability and robustness, effectively preventing the model from overfitting to specific backgrounds or a limited number of dishes.
+
+Furthermore, UECFoodPix is also valuable as a publicly available benchmark dataset. It is widely used in academic research, providing a comparable benchmark for our work. Achieving good performance on this dataset not only validates the effectiveness of our model (YOLOv8n) but also makes our research results easier to compare and evaluate against existing work.
+
+\subsection{Training Process}
+
+We deployed the basic environment on Google Colab, installing and configuring the YOLOv8n model. Additionally, we installed OpenCV for image preprocessing and PyYAML for configuration-file parsing. Ensuring the integrity and compatibility of the training environment provided a stable foundation for subsequent model training.
+
+We designed a \texttt{YOLOv8SegmentationConfig} class to centrally manage all training parameters. This centralized parameter management enabled traceability, ease of adjustment, and reusable configuration. Based on the hardware capabilities of an RTX 5070 graphics card, we performed specific optimizations. We set the batch size to 8 and enabled automatic mixed-precision training to significantly reduce memory usage.
+
+The number of training epochs was set to 100, with a 20-epoch patience threshold early-stopping mechanism. The optimizer used stochastic gradient descent (SGD), combined with a cosine-annealing learning-rate scheduler. The initial learning rate was 0.01, supplemented by a 3-epoch learning-rate warm-up phase to ensure stability in the early stages of training.
+
+For the characteristics of the food-segmentation task, we designed specific data-augmentation strategies. These include adjustments to hue, saturation, and brightness; maintaining the food's normal orientation (no rotations); and allowing horizontal flipping to increase sample diversity. Mosaic augmentation is applied to improve the model's ability to detect small objects. Detailed progress information is displayed during training, allowing users to easily monitor training status. Model performance is evaluated during training at regular intervals.
+
+\subsection{Results}
+
+The model achieved an mAP of 0.9492 at IoU 0.5 and 0.8660 for mAP@0.5:0.95, both at a high level. Precision was 0.9301, and the mAP for the segmentation mask at 0.5 IoU was also 0.9492. The mAP for the segmentation mask at 0.5:0.95 IoU was 0.8409. While slightly lower than the corresponding metrics for bounding boxes, these results are still acceptable considering the higher accuracy requirements of segmentation tasks. The model achieved a recall of 0.9035, a high recall rate that effectively avoids missing food components. The F1 score of 0.9166 confirms a good balance between precision and recall.
+
+The model also demonstrated excellent inference efficiency. The average processing time per image was only 2.3 milliseconds, including 0.5 milliseconds for preprocessing, 1.0 millisecond for inference, and 0.8 milliseconds for postprocessing. Such a high processing speed implies a processing capacity of approximately 435 frames per second, fully meeting the needs of real-time applications.
+
+The results show that the YOLOv8n-seg model contains 85 layers and 3.258 million parameters, with a computational complexity of 11.3 GFLOPs. This compact model structure effectively controls computational resource requirements while maintaining high accuracy; the model has fully learned and mastered the core features of food segmentation.
+
+% ---------------------------------------------------------------
+\section{Food Volume Calculation}
+
+\subsection{Food Area Calculation Module}
+
+Estimating the caloric content of food through photographs is a challenging but feasible computer-vision task that involves multiple interconnected steps of sophisticated analysis and nuanced reasoning. At its core, this endeavor sits at the intersection of machine perception, geometric optics, and nutritional science. Fundamentally, the process requires not only accurate identification of the food type but also a reliable estimation of the food's volume. The core formula for calculating calorie content is straightforward in theory: total calories equal the calorie density per unit weight multiplied by the total weight of the food. However, directly extracting weight information from a two-dimensional image is impossible, as weight is an intrinsic property that cannot be visually measured without density. This is where volume estimation becomes the critical bridge. If we can derive the three-dimensional volume of the food item from the image and combine it with the known calorie density per unit volume for that specific food type, we can arrive at a reasonable estimate of the total caloric content. This seemingly simple premise hides a cascade of complex technical hurdles.
+
+The transition from a flat photograph to a volumetric understanding hinges on a deep understanding and systematic counteraction of the numerous factors that influence how an object appears in an image. The size of an object in a photo is not solely dependent on its actual physical dimensions; it is profoundly affected by two key photographic parameters: the distance between the camera and the object (shooting distance) and the focal length of the camera lens. A distant object will appear smaller, while a closer one will appear larger. Similarly, a telephoto lens (long focal length) can compress perspective and make a subject appear closer and larger, while a wide-angle lens (short focal length) can expand perspective, making objects appear farther away and potentially introducing distortion, especially at the edges of the frame.
+
+Humans naturally and effortlessly compensate for these variables when viewing photos through a lifetime of visual experience and contextual learning. Our cognitive system performs complex, subconscious calculations by using a rich tapestry of contextual clues and reference objects of known size within the scene---a fork, a standard-sized plate, a human hand, a credit card---to gauge the actual scale of the primary subject. For an automated system to replicate this innate human ability, it must be explicitly programmed with the formal, mathematical principles of imaging geometry and provided with external data to anchor its scale, as it lacks the innate world knowledge a human possesses.
+
+To build robust models capable of food identification---the first critical step---the computer-vision community heavily relies on carefully curated, large-scale datasets. The Nutrition5k dataset is a prominent example specifically designed for food-analysis tasks. A key and deliberate aspect of its design is the rigorous standardization of imaging conditions. All food items in Nutrition5k are photographed from a fixed distance of 35.9 centimeters using a consistent camera setup with a known, fixed focal length under controlled lighting. This rigorous protocol ensures that the apparent size and perspective of a given food item are consistent across all its images, effectively eliminating confounding variables related to perspective, scale, and lens distortion.
+
+This consistency is invaluable for training high-performance food-classification models, as it allows convolutional neural networks (CNNs) or vision transformers to learn discriminative features related purely to the food's visual identity---texture, color, local patterns---without being confused or distracted by size and shape variations stemming from different camera positions or lenses. The model can learn that a certain visual pattern corresponds to ``pizza,'' regardless of whether it takes up 1000 or 2000 pixels, because the imaging setup is constant. However, this very strength highlights a major, almost paradoxical limitation for practical, real-world application: it is entirely unrealistic and user-unfriendly to expect end-users to measure and maintain a precise 35.9\,cm distance when taking a photo of their meal in a casual setting like a restaurant or home kitchen. A system demanding such strict, laboratory-like adherence would be unusable for the masses.
+
+Therefore, for any practical and deployable calorie-estimation module, the shooting distance cannot be assumed as a constant; it must be treated as a variable that is either provided by the user as an input (e.g., a rough estimate at arm's length) or estimated autonomously by the system through other computational means, such as using a depth sensor or inferring it from scene context.
+
+The primary technical objective, then, after successful food detection and classification, is to accurately estimate the actual physical area (and subsequently volume) of food items from these highly variable, user-captured photographs. This spatial estimation provides the foundational quantitative data upon which all subsequent caloric calculations are built. The process involves leveraging the well-established principles of pinhole camera modeling and perspective geometry to convert pixel-based measurements in the two-dimensional image plane into real-world dimensional measurements (e.g., in centimeters). Since a standard photograph from a consumer smartphone or digital camera is a 2D projection of a 3D world and lacks inherent depth information, external data must be incorporated to recover the lost scale and reverse the projection.
+
+In our proposed module's current design, the user-provided shooting distance serves as this crucial piece of depth data, acting as the key to unlocking real-world scale. Other essential inputs include the coordinates of bounding boxes (or more precise segmentation masks) that localize each food item within the image (obtained from a preliminary object-detection model like YOLO or a Mask R-CNN) and the image file path itself, which is the gateway to accessing embedded camera metadata.
+
+The mathematical conversion from pixels to physical units is achieved through the application of the principle of similar triangles, a fundamental concept in optics and projective geometry. The first step in this pipeline involves gathering the necessary intrinsic camera parameters from the image file. Critical data, such as the focal length (in mm or pixels), sensor size, and sometimes lens-distortion coefficients, are often embedded within the photo's Exchangeable Image File (EXIF) metadata, which most modern cameras and smartphones populate automatically. The focal length, in particular, is a key determinant of the camera's field of view and is central to the calculation.
+
+With the focal length $f$ known (converted to a consistent unit, often pixels for calculation), the shooting distance $d$ provided by the user (in real-world units like millimeters), and the size of an object measured in pixels $p$ within the image (e.g., the width of a detected bounding box), we can calculate its real-world size $S$ using a formula derived from similar triangles:
+\[
+S = \frac{p \cdot d}{f}.
+\]
+A more precise formulation might account for sensor pixel density:
+\[
+S = \frac{p \cdot d}{f \cdot k},
+\]
+where $k$ is a conversion factor related to the sensor's pixel pitch (millimeters per pixel). This process effectively reverses the perspective projection, mapping points from the image sensor plane back into the 3D world, conditioned on the known distance $d$.
+
+To estimate the area of a food item, the system first employs a trained detector to identify its boundaries within the image, resulting in a rectangular bounding box or a fine-grained segmentation mask defined in pixel coordinates. Using the geometric transformation described above, the pixel dimensions of this bounding box (height and width) are independently converted into real-world dimensions (e.g., centimeters). The actual physical area of the food's top-down projection (its footprint) can then be calculated. For a rectangular bounding-box approximation, this is simply the product of the converted width and height. For a segmentation mask, the area in pixels can be summed and then converted using a scale factor derived from the same geometry. For instance, if the bounding box translates to a real-world rectangle of 10\,cm by 5\,cm, its projected area is 50\,cm$^2$. This area measurement is the first major output of the module and a direct precursor to volume.
+
+The final step in the computational pipeline integrates all this disparate information. Once the food type is identified (via a separate, dedicated classification model) and its volume $V$ is estimated, the system queries a comprehensive nutritional database to retrieve the appropriate calorie density per unit volume $C_v$ for that specific food. This lookup is non-trivial, as it must account for preparation methods (fried vs.\ baked), ingredients (e.g., cheese type on pizza), and regional variations. The total estimated calorie content $\mathrm{Cal}$ is then calculated as
+\[
+\mathrm{Cal} = C_v \cdot V.
+\]
+
+It is crucial to acknowledge the compounding potential error margins and uncertainties at every stage of this pipeline: slight inaccuracies in the user-provided distance, imperfections and noise in bounding-box detection or segmentation, significant errors in 3D shape approximation for volume, and the substantial natural variation in the calorie density of real, non-homogeneous food. A slice of cheesecake can have varying amounts of crust and filling; a salad's dressing coverage is uneven. Therefore, the system's output must be presented not as a single, seemingly precise figure (e.g., 453 calories), but as an educated estimate within a probable range (e.g., 380--520 calories), accompanied by a confidence score or an explanation of the primary uncertainty sources. This transparency is vital for user trust and the ethical application of such technology, especially for individuals with specific dietary or medical needs.
+
+In conclusion, transforming a casual, in-the-wild food photo into a meaningful calorie estimate is a multi-stage pipeline that synthesizes advanced computer vision, geometric optics, and nutritional science. It begins with object detection and food classification, proceeds through the critical geometric correction using user input and EXIF data to find real-world area, advances to volumetric modeling, and culminates in a nuanced database lookup and calculation. While the standardized Nutrition5k dataset provides an excellent, controlled training ground for the identification component, practical application in diverse real-world scenarios demands significant flexibility and robustness in handling variable shooting conditions, lighting, occlusions, and food presentations.
+
+By explicitly incorporating the shooting distance as a key input and applying the principles of perspective geometry, the system can demystify the scale of objects in photographs, converting abstract pixels into tangible centimeters and transforming images into actionable, albeit approximate, nutritional insights. This approach represents a pragmatic bridge between the controlled, clean world of academic datasets and the messy, unpredictable world of everyday food photography, making large-scale, automated dietary assessment a tangible, though imperfect, possibility.
+
+Future enhancements may involve using smartphone depth sensors (such as LiDAR or structured light) to directly obtain per-pixel distance maps, eliminating the need for user distance input. Other directions include employing more sophisticated monocular or multi-view 3D reconstruction techniques from short video bursts, or training end-to-end deep-learning models on large paired image-calorie datasets to directly infer calorie content from pixels, thereby bypassing explicit geometric modeling. Such models would learn implicit representations of volume and density, though they would require substantial training data and raise questions about interpretability.
+
+\subsection{Food Volume Calculation Module}
+
+We need to accurately estimate the actual physical area of food from food photos to provide foundational data for subsequent volume and calorie calculations. By combining camera imaging principles and simple perspective geometry, pixel information in the image is converted into real-world dimensional measurements. Considering that user-taken photos lack depth information, the shooting distance is included as one of the inputs for this module. Other inputs include the coordinates of the bounding boxes and the file path. By extracting parameters such as focal length from the photo's EXIF file and applying the principle of similar triangles, pixel distances are converted into actual distances, ultimately outputting the actual area within each bounding box.
+
+The \emph{Smart Food Volume Estimation System} is a Python-based application that leverages computer vision and geometric modeling to estimate the volume of food items from 2D images. At its core, the system integrates shape classification, contour extraction, and shape-specific algorithms to handle five common food shapes: spherical (e.g., apples), cylindrical (e.g., cups), flat (e.g., bread slices), irregular (e.g., mixed dishes), and general irregular shapes.
+
+The workflow begins with image preprocessing, where the input image is cropped to isolate the food region using user-defined coordinates or automated detection. OpenCV tools such as \texttt{cv2.findContours} and \texttt{cv2.Canny} are employed to extract precise edges and contours, which are critical for calculating geometric parameters such as area, perimeter, and circularity. These parameters guide the system in classifying the food type, which in turn determines the volume calculation method. For instance, spherical foods use standard geometric formulas for sphere volume, while irregular shapes rely on 3D reconstruction techniques such as the watershed algorithm (\texttt{cv2.watershed}) to approximate height distribution.
+
+A key technical challenge addressed in the system is pixel-to-physical unit calibration, achieved by placing a reference object (e.g., a 1\,cm ruler) in the image. This allows the system to convert pixel measurements into real-world dimensions using a calculated pixel-to-centimeter ratio. Additionally, perspective correction and camera calibration are implemented to minimize errors caused by lens distortion or varying camera distances.
+
+The system's innovation lies in its adaptive algorithm selection and robust contour analysis. By dynamically choosing the most suitable volume-calculation method based on the detected food shape, the system ensures accuracy across diverse scenarios. For irregular foods, a combination of contour-based modeling and depth estimation (e.g., using Intel RealSense depth sensors) enables more precise 3D volume reconstruction.
+
+The code also incorporates advanced techniques such as HSV color thresholding (\texttt{cv2.inRange}) and morphological operations to isolate food regions from complex backgrounds, ensuring reliable contour extraction. Calibration is handled through the reference object, with the pixel-to-centimeter ratio computed as
+\[
+\text{pixel\_to\_cm} = \frac{1}{\text{reference\_length\_pixels}}.
+\]
+This approach allows the system to translate pixel-based area and height measurements into physical units.
+
+The implementation emphasizes modularity, with separate functions for preprocessing, shape classification, and volume calculation, enabling scalability for future enhancements. Testing against manual measurements and 3D scanning data demonstrated a volume-estimation error margin of less than 10\% for regular shapes and improved accuracy for irregular foods when 3D modeling is used. This project showcases how Python and OpenCV can be combined to address real-world challenges in food volume estimation, with potential applications in nutrition tracking, dietary analysis, and smart kitchen systems.
+
+Overall, the system demonstrates the feasibility of using Python and OpenCV for non-invasive food volume estimation. By integrating shape classification, contour extraction, and geometric modeling, it provides a scalable solution for applications in diet tracking, nutrition analysis, and food waste management. Future work includes expanding support for mixed foods and integrating with IoT devices for real-time monitoring.
+
+% ---------------------------------------------------------------
+\section{Application Integrating}
+
+\subsection{System Overview}
+
+The main objective of this project involves developing an automatic system that calculates food calories from individual photo images. The system aims to reduce user workload by removing the need for manual lookup, text entry, or detailed nutritional knowledge. Users can track their diet through image capture alone because the system performs all analysis automatically. This automatic approach provides convenience for users who want a simple and fast calorie-tracking experience.
+
+The project follows the idea that diet tracking should be accessible to everyone. Many existing applications require users to type food names or manually select items from long lists. Such interactions increase friction and discourage long-term use. This project attempts to solve that problem by introducing a single-step pipeline: the user takes a photo, and the system interprets the food content, its volume, and the estimated calories. The goal is to create a user experience that feels direct, quick, and reliable.
+
+The backend and frontend operate together to support this objective. The frontend provides an easy-to-use camera interface, while the backend performs the heavy computation, including segmentation, classification, distance estimation, and calorie conversion. This cooperation makes the system responsive and ensures consistent performance across different devices.
+
+\subsection{System Architecture}
+
+The system uses a modular backend structure as its core architectural approach. A Flask server hosts multiple independent services, each of which performs one part of the calorie-estimation pipeline. This design allows the system to remain organized, maintainable, and scalable.
+
+The backend includes services for:
+\begin{itemize}
+    \item \textbf{Food Segmentation}: A YOLO-based module isolates the food region from the rest of the image.
+    \item \textbf{Food Classification}: The EfficientNet-B3 model identifies the food category.
+    \item \textbf{Volume Estimation}: A module combines bounding-box information, distance, and shape heuristics to approximate volume.
+    \item \textbf{Calorie Conversion}: A calculation module transforms estimated volume into calories using density and nutritional data.
+    \item \textbf{Distance Estimation}: The DeepSeek API provides an approximate camera-to-food distance.
+\end{itemize}
+
+Each service runs within a Flask blueprint structure. This modular approach separates responsibilities and improves the system's clarity. The separation also makes debugging easier because each service has a narrow and well-defined purpose.
+
+On the frontend, the mobile application uses React Native and Expo Router. The application communicates with backend endpoints exposed by Flask. The frontend handles camera interaction, displays results, and manages user history views, while all heavy business logic remains on the backend. This design choice keeps the mobile interface lightweight and easier to run across multiple devices and platforms.
+
+\subsection{Image Processing Pipeline}
+
+The image-to-calorie pipeline represents the core functionality of the system. The pipeline transforms a raw food image into a calorie estimate through a sequence of structured steps.
+
+\paragraph{Food Segmentation.} The pipeline begins with image segmentation using a YOLO model. The segmentation module generates bounding boxes and segmentation masks to extract the food region. The system chooses the largest mask, which most likely represents the primary food item. By isolating the food content, the pipeline improves classification accuracy and reduces noise from background objects.
+
+\paragraph{Food Classification.} After segmentation, the system classifies the food using EfficientNet-B3. This model predicts a label from the Food-101 dataset. The classification output helps determine the density and nutritional characteristics of the food item. This step allows the system to connect volume information to calorie information.
+
+\paragraph{Volume Estimation.} Volume estimation requires combining several types of information, including bounding-box area, segmentation mask size, assumed food shape, and distance estimates. The system uses shape heuristics to convert image area into volume. For example, spherical fruits, cylindrical foods, and flat dishes use different formulas, which form the basis of the volume-calculation module.
+
+\paragraph{Calorie Conversion.} After estimating the food's volume in cubic centimeters, the system converts volume into mass using density tables. The final output is a calorie estimate displayed to the user.
+
+The pipeline completes this process in a single flow. Users only need to take a picture; the system handles all computational processes without requiring additional input.
+
+\subsection{Distance Estimation Feature}
+
+A key feature enabling automatic processing in this project is the integration of a distance-estimation mechanism. Instead of requiring users to follow strict photo guidelines, the system uses the DeepSeek API to estimate the distance between the food and the camera. This method allows users to take photos naturally without worrying about angle or distance restrictions.
+
+The distance-estimation step helps improve volume accuracy. The pixel-to-centimeter conversion depends heavily on the distance between the camera sensor and the food. Without this distance, the system would rely on strong assumptions that could lead to major sizing errors. The DeepSeek API adds contextual information by analyzing the image, though this external call increases overall processing time.
+
+This feature offers convenience but introduces a dependency on an external service. The system must handle possible instability or delays from the API. Fallback logic ensures that the system still works when distance estimation fails, although with reduced accuracy. This design balances usability and robustness, allowing the system to function under imperfect network or service conditions.
+
+\subsection{Strengths of the System}
+
+The integrated design provides several advantages:
+
+\begin{itemize}
+    \item \textbf{Automation}: The entire calorie-estimation process works without manual user input beyond taking a photo. This removes the typical friction found in diet-tracking apps.
+    \item \textbf{Clear Architecture}: The modular backend improves maintainability and allows scaling or replacing individual models without redesigning the entire system.
+    \item \textbf{Fallback Mechanisms}: The system continues functioning even when external services fail or information is partially missing, trading off accuracy for robustness.
+    \item \textbf{Local Models for Speed}: Running segmentation and classification locally avoids cloud delays and reduces latency, improving responsiveness.
+    \item \textbf{Single-Step User Interaction}: The user only takes a picture. The system handles recognition, segmentation, volume estimation, and calorie calculation in a single workflow.
+\end{itemize}
+
+These strengths make the system accessible and easy to use, even for users unfamiliar with nutritional science or technical details of computer vision.
+
+\subsection{Limitations}
+
+Despite its functionality, the system contains several limitations:
+
+\begin{itemize}
+    \item \textbf{Food-Type Limitation}: Currently, the classification component can only identify 101 kinds of food, which is far from sufficient for everyday use in diverse cuisines and contexts.
+    \item \textbf{Distance-Estimation Instability}: The external API sometimes generates inconsistent distance outputs, directly affecting volume and calorie accuracy.
+    \item \textbf{Dependency on External Services}: Reliance on external APIs introduces potential latency and availability issues, especially under poor network conditions.
+    \item \textbf{Model Weight Requirements}: The backend requires large model files to be manually placed on the server, which complicates deployment and maintenance.
+\end{itemize}
+
+These limitations highlight areas for future improvement, especially regarding accuracy, robustness, and deployment convenience.
+
+\subsection{Conclusion}
+
+This project demonstrates a complete image-to-calorie estimation pipeline that uses segmentation, classification, distance estimation, volume calculation, and nutritional conversion. The system successfully reduces user involvement and provides an automatic method for calorie tracking. The modular architecture supports clear functionality separation and makes it easier to update or expand individual components, paving the way for future extensions in both model capability and user experience.
+
+\subsection{Future Work}
+
+Future improvements can strengthen the accuracy, stability, and usability of the system. Several directions show clear potential:
+
+\begin{itemize}
+    \item \textbf{Improved Volume Estimation}: Current methods rely on relatively simple shape assumptions, which do not match all food types. Future work can introduce more advanced geometric modeling or 3D reconstruction methods to improve accuracy, especially for foods with irregular shapes.
+    \item \textbf{Stable Distance Estimation}: The system currently depends on the DeepSeek API, which sometimes produces inconsistent results. A more reliable method may involve combining multiple distance sources, such as device sensor data, depth-estimation models, or multi-image input. These methods can reduce dependency on external services and improve the accuracy of pixel-to-centimeter conversion.
+    \item \textbf{Expanded Nutrition Data}: Nutrition data can be expanded beyond the 101 food types covered by Food-101. Extending the range of recognizable foods and using a larger database to train models that can identify more varieties is essential for the software to meet everyday usage standards.
+    \item \textbf{Persistent Backend and User Data}: The system can move from mock services to a full backend database. A persistent cloud database would allow users to store food logs, view long-term trends, and sync data across devices. Features such as user authentication and personalized history analysis can further enhance the user experience.
+    \item \textbf{Improved Mobile Interface}: A more refined mobile interface design can support better interaction. Users may benefit from feedback messages, clearer processing indicators, or interactive editing options for segmentation results. These features can give users more control while keeping the overall experience simple.
+\end{itemize}
+
+% ---------------------------------------------------------------
+\appendix
+\section{Principles for Contribution Allocation}
+
+Completing a large-scale project is never an easy task, and we are pleased that our final outcome has achieved a highly satisfactory level.
+
+Our contribution distribution is determined based on several criteria, including each member's overall engagement throughout the development cycle, the quality and performance of the code submitted, the technical difficulty of the assigned tasks, the time and effort invested, and the importance of each individual's responsibilities to the success of the project. Of course, the unity, collaboration, and strong bonds within our team also play an essential role in our evaluation.
+
+\subsection{Final Contribution Results}
+
+\begin{itemize}
+    \item \textbf{LIU Mingzheng:} Image Segmentation \quad 20\%
+    \item \textbf{Wang Zhiyi:} Volume Estimation \quad 20\%
+    \item \textbf{Feng Lanbo:} Volume Estimation \quad 20\%
+    \item \textbf{Su Lei (Group Leader):} Image Classification \quad 20\%
+    \item \textbf{ZENG Haoxin:} Integrating algorithms and optimizing the app \quad 20\%
+\end{itemize}
+
+% ---------------------------------------------------------------
+% If you have references, keep this. Otherwise you can comment it.
+\printbibliography
+
+\end{document}
